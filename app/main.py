@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form ,Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from datetime import datetime
@@ -10,6 +10,8 @@ from app.config import settings
 from app.database.mongodb import MongoDB, get_db
 from app.services.stt_service import stt_service
 from app.services.gemini_service import gemini_service
+from app.routes import auth
+from app.utils.auth import get_current_user
 
 app = FastAPI(
     title="Lecture Voice-to-Notes API",
@@ -25,6 +27,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include authentication routes
+app.include_router(auth.router)
 
 # Database connection events
 @app.on_event("startup")
@@ -58,11 +63,15 @@ async def health_check():
 async def upload_lecture(
     file: UploadFile = File(...),
     title: str = Form(None),
-    user_id: str = Form("default_user")
+    current_user_email: str = Depends(get_current_user)
 ):
     """
-    Upload audio file and process it into structured notes
+    Upload audio file and process it into structured notes (Protected route)
     """
+    # Get user_id from email
+    db = get_db()
+    user = await db.users.find_one({"email": current_user_email})
+    user_id = str(user["_id"])
     # Validate file type
     if file.content_type not in settings.ALLOWED_AUDIO_TYPES:
         raise HTTPException(
@@ -194,14 +203,17 @@ async def get_notes(lecture_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # Get all lectures for a user
-@app.get("/api/lectures/user/{user_id}")
-async def get_user_lectures(user_id: str):
+@app.get("/api/lectures/user")
+async def get_user_lectures(current_user_email: str = Depends(get_current_user)):
     """
-    Get all lectures for a specific user
+    Get all lectures for the current authenticated user
     """
     db = get_db()
     
     try:
+        # Get user_id
+        user = await db.users.find_one({"email": current_user_email})
+        user_id = str(user["_id"])
         lectures = await db.lectures.find(
             {"user_id": user_id}
         ).sort("upload_date", -1).to_list(100)
